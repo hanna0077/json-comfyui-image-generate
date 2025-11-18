@@ -43,6 +43,91 @@ def load_workflow(workflow_name):
         return {"error": f"워크플로우를 로드할 수 없습니다: {str(e)}"}
 
 
+def convert_ui_to_api_workflow(workflow):
+    """UI JSON 형식을 ComfyUI API JSON 형식으로 변환"""
+    # 이미 API 형식인 경우 (nodes가 배열이 아닌 경우)
+    if not isinstance(workflow.get("nodes"), list):
+        return workflow
+
+    api_workflow = {}
+    nodes = workflow.get("nodes", [])
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+
+        node_id = str(node.get("id"))
+        node_type = node.get("type")
+
+        # API 형식으로 변환
+        api_node = {
+            "class_type": node_type,
+            "inputs": {}
+        }
+
+        # inputs 처리
+        if "inputs" in node:
+            for inp in node["inputs"]:
+                if isinstance(inp, dict) and "link" in inp:
+                    # 링크된 입력은 links에서 찾아야 함
+                    continue
+
+        # widgets_values를 inputs로 변환
+        if "widgets_values" in node and isinstance(node["widgets_values"], list):
+            # 노드 타입에 따라 위젯 매핑
+            if node_type == "TextEncodeQwenImageEditPlus":
+                if len(node["widgets_values"]) > 0:
+                    api_node["inputs"]["prompt"] = node["widgets_values"][0]
+            elif node_type in ["KSampler", "KSamplerAdvanced"]:
+                widgets = node["widgets_values"]
+                if len(widgets) > 0:
+                    api_node["inputs"]["seed"] = int(widgets[0]) if widgets[0] != "fixed" else int(time.time())
+                if len(widgets) > 2:
+                    api_node["inputs"]["steps"] = widgets[2]
+                if len(widgets) > 3:
+                    api_node["inputs"]["cfg"] = widgets[3]
+                if len(widgets) > 4:
+                    api_node["inputs"]["sampler_name"] = widgets[4]
+                if len(widgets) > 5:
+                    api_node["inputs"]["scheduler"] = widgets[5]
+                if len(widgets) > 6:
+                    api_node["inputs"]["denoise"] = widgets[6]
+            elif node_type == "Seed Generator":
+                if len(node["widgets_values"]) > 0:
+                    api_node["inputs"]["seed"] = int(node["widgets_values"][0])
+            elif node_type == "SaveImage":
+                if len(node["widgets_values"]) > 0:
+                    api_node["inputs"]["filename_prefix"] = node["widgets_values"][0]
+            elif node_type == "EmptySD3LatentImage":
+                widgets = node["widgets_values"]
+                if len(widgets) > 0:
+                    api_node["inputs"]["width"] = widgets[0]
+                if len(widgets) > 1:
+                    api_node["inputs"]["height"] = widgets[1]
+                if len(widgets) > 2:
+                    api_node["inputs"]["batch_size"] = widgets[2]
+
+        # links 처리 - 입력 연결
+        if "inputs" in node:
+            links = workflow.get("links", [])
+            for inp in node["inputs"]:
+                if isinstance(inp, dict) and "link" in inp and inp["link"] is not None:
+                    # link ID로 연결 찾기
+                    link_id = inp["link"]
+                    for link in links:
+                        if link[0] == link_id:
+                            # link 형식: [link_id, source_node_id, source_output_index, target_node_id, target_input_index, data_type]
+                            source_node_id = str(link[1])
+                            source_output_index = link[2]
+                            input_name = inp.get("name")
+                            api_node["inputs"][input_name] = [source_node_id, source_output_index]
+                            break
+
+        api_workflow[node_id] = api_node
+
+    return api_workflow
+
+
 def set_unique_filename(workflow, unique_id, index=None, item_id=None, subfolder=None):
     nodes = workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else workflow.values()
 
@@ -125,13 +210,17 @@ def generate_single(prompt, workflow_name, subfolder):
                 node["inputs"]["seed"] = int(time.time())
     
     try:
-        res = requests.post(f"{COMFY_API_URL}/prompt", json={"prompt": workflow})
+        # UI JSON을 API JSON으로 변환
+        api_workflow = convert_ui_to_api_workflow(workflow)
+        logging.debug(f"Converted workflow to API format with {len(api_workflow)} nodes")
+
+        res = requests.post(f"{COMFY_API_URL}/prompt", json={"prompt": api_workflow})
         res.raise_for_status()
         prompt_id = res.json().get("prompt_id")
-        
+
         image_url = wait_for_image(prompt_id, subfolder)
         logging.info(f"Generated image URL: {image_url}")
-        
+
         return jsonify({"image_url": image_url})
     except Exception as e:
         logging.error(f"Error in generate_single: {e}")
@@ -217,17 +306,22 @@ def generate_backgrounds(background_items, workflow_name, subfolder):
                     node["inputs"]["seed"] = new_seed
         
         try:
+            # UI JSON을 API JSON으로 변환
+            api_workflow = convert_ui_to_api_workflow(workflow)
+            logging.debug(f"[Image {idx}] Converted workflow to API format with {len(api_workflow)} nodes")
+
             # 프롬프트 전송
-            res = requests.post(f"{COMFY_API_URL}/prompt", json={"prompt": workflow})
+            res = requests.post(f"{COMFY_API_URL}/prompt", json={"prompt": api_workflow})
             res.raise_for_status()
             prompt_id = res.json().get("prompt_id")
-            
+
             # 이미지 대기
             result = wait_for_image(prompt_id, subfolder, idx)
             results.append(result)
         except Exception as e:
+            logging.error(f"[Image {idx}] Error: {e}")
             results.append(f"error: {str(e)}")
-        
+
         time.sleep(2)
     
     return jsonify({"image_urls": results})
