@@ -44,10 +44,14 @@ def load_workflow(workflow_name):
 
 
 def set_unique_filename(workflow, unique_id, index=None, item_id=None, subfolder=None):
-    for node in workflow.values():
+    nodes = workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else workflow.values()
+
+    for node in nodes:
         if not isinstance(node, dict):
             continue
-        if node.get("class_type") == "SaveImage":
+
+        node_type = node.get("type") or node.get("class_type")
+        if node_type == "SaveImage":
             # 기본 파일 이름 생성
             if item_id is not None and index is not None:
                 filename = f"background_id={item_id}_{index:02d}_{unique_id}"
@@ -55,18 +59,24 @@ def set_unique_filename(workflow, unique_id, index=None, item_id=None, subfolder
                 filename = f"background_{index:02d}_{unique_id}"
             else:
                 filename = f"background_{unique_id}"
-            
+
             # subfolder를 포함한 파일 경로 생성
             if subfolder:
                 filename_prefix = f"{subfolder}/{filename}"
             else:
                 filename_prefix = filename
-            
-            if "inputs" in node:
+
+            # widgets_values 형식 (UI JSON)
+            if "widgets_values" in node and isinstance(node["widgets_values"], list):
+                # SaveImage의 첫 번째 widget이 filename_prefix
+                if len(node["widgets_values"]) > 0:
+                    node["widgets_values"][0] = filename_prefix
+            # inputs 형식 (API JSON)
+            elif "inputs" in node:
                 node["inputs"]["filename_prefix"] = filename_prefix
                 # subfolder key는 삭제 (filename_prefix에 포함됐기 때문)
                 node["inputs"].pop("subfolder", None)
-    
+
     return workflow
 
 
@@ -74,22 +84,44 @@ def generate_single(prompt, workflow_name, subfolder):
     workflow = load_workflow(workflow_name)
     if "error" in workflow:
         return jsonify(workflow), 500
-    
+
     # 프롬프트를 워크플로우 내에 반영
-    for node in workflow.values():
-        if (
-            isinstance(node, dict)
-            and node.get("class_type") == "CLIPTextEncode"
-            and node.get("_meta", {}).get("title") == "Positive Prompt"
-        ):
-            if "inputs" in node and "text" in node["inputs"]:
+    # ComfyUI JSON 구조: nodes 배열 안에 각 노드가 있음
+    nodes = workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else workflow.values()
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+
+        # TextEncodeQwenImageEditPlus 또는 CLIPTextEncode 타입 중 "Positive Prompt" 제목을 가진 노드 찾기
+        node_type = node.get("type") or node.get("class_type")
+        node_title = node.get("title") or node.get("_meta", {}).get("title")
+
+        if node_title == "Positive Prompt" and node_type in ["TextEncodeQwenImageEditPlus", "CLIPTextEncode"]:
+            # widgets_values 배열의 첫 번째 값이 프롬프트
+            if "widgets_values" in node and isinstance(node["widgets_values"], list) and len(node["widgets_values"]) > 0:
+                node["widgets_values"][0] = prompt
+                logging.info(f"Set prompt in widgets_values: {prompt[:100]}...")
+            # API 형식의 경우 inputs.text 확인
+            elif "inputs" in node and "text" in node["inputs"]:
                 node["inputs"]["text"] = prompt
+                logging.info(f"Set prompt in inputs.text: {prompt[:100]}...")
     
     workflow = set_unique_filename(workflow, str(uuid.uuid4())[:8], subfolder=subfolder)
-    
-    for node in workflow.values():
-        if node.get("class_type") in ["KSampler", "KSamplerAdvanced", "Seed"]:
-            if "inputs" in node and "seed" in node["inputs"]:
+
+    # Seed 설정
+    nodes = workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else workflow.values()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+
+        node_type = node.get("type") or node.get("class_type")
+        if node_type in ["KSampler", "KSamplerAdvanced", "Seed", "Seed Generator"]:
+            # widgets_values 형식 (UI JSON) - KSampler는 첫 번째 값이 seed
+            if "widgets_values" in node and isinstance(node["widgets_values"], list) and len(node["widgets_values"]) > 0:
+                node["widgets_values"][0] = int(time.time())
+            # inputs 형식 (API JSON)
+            elif "inputs" in node and "seed" in node["inputs"]:
                 node["inputs"]["seed"] = int(time.time())
     
     try:
@@ -133,28 +165,56 @@ def generate_backgrounds(background_items, workflow_name, subfolder):
             results.append("empty")
             continue
         
-        for node in workflow.values():
-            if (
-                isinstance(node, dict)
-                and node.get("class_type") == "CLIPTextEncode"
-                and node.get("_meta", {}).get("title") == "Positive Prompt"
-            ):
-                if "inputs" in node and "text" in node["inputs"]:
+        # 프롬프트 설정 디버깅
+        prompt_set = False
+        nodes = workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else workflow.values()
+
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+
+            # TextEncodeQwenImageEditPlus 또는 CLIPTextEncode 타입 중 "Positive Prompt" 제목을 가진 노드 찾기
+            node_type = node.get("type") or node.get("class_type")
+            node_title = node.get("title") or node.get("_meta", {}).get("title")
+
+            if node_title == "Positive Prompt" and node_type in ["TextEncodeQwenImageEditPlus", "CLIPTextEncode"]:
+                # widgets_values 배열의 첫 번째 값이 프롬프트
+                if "widgets_values" in node and isinstance(node["widgets_values"], list) and len(node["widgets_values"]) > 0:
+                    node["widgets_values"][0] = prompt
+                    prompt_set = True
+                    logging.info(f"[Image {idx}] Prompt set in widgets_values: {prompt[:100]}...")
+                # API 형식의 경우 inputs.text 확인
+                elif "inputs" in node and "text" in node["inputs"]:
                     node["inputs"]["text"] = prompt
+                    prompt_set = True
+                    logging.info(f"[Image {idx}] Prompt set in inputs.text: {prompt[:100]}...")
+
+        if not prompt_set:
+            logging.warning(f"[Image {idx}] Failed to set prompt! Prompt was: {prompt[:100]}...")
         
         # ❗4. 워크플로우에 고유 파일명 설정
         workflow = set_unique_filename(workflow, batch_id, idx, item_id, subfolder=subfolder)
-        
+
         # ❗5. workflow가 dict가 아닐 경우 대비
         if not isinstance(workflow, dict):
             results.append("error")
             continue
-        
+
         # Seed 설정
-        for node in workflow.values():
-            if isinstance(node, dict) and node.get("class_type") in ["KSampler", "KSamplerAdvanced", "Seed"]:
-                if "inputs" in node and "seed" in node["inputs"]:
-                    node["inputs"]["seed"] = int(time.time()) + (idx + 1) * 10000
+        seed_nodes = workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else workflow.values()
+        for node in seed_nodes:
+            if not isinstance(node, dict):
+                continue
+
+            node_type = node.get("type") or node.get("class_type")
+            if node_type in ["KSampler", "KSamplerAdvanced", "Seed", "Seed Generator"]:
+                new_seed = int(time.time()) + (idx + 1) * 10000
+                # widgets_values 형식 (UI JSON) - KSampler는 첫 번째 값이 seed
+                if "widgets_values" in node and isinstance(node["widgets_values"], list) and len(node["widgets_values"]) > 0:
+                    node["widgets_values"][0] = new_seed
+                # inputs 형식 (API JSON)
+                elif "inputs" in node and "seed" in node["inputs"]:
+                    node["inputs"]["seed"] = new_seed
         
         try:
             # 프롬프트 전송
