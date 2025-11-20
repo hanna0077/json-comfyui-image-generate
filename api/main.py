@@ -178,19 +178,22 @@ def generate_single(prompt, workflow_name, subfolder):
         if not isinstance(node, dict):
             continue
 
-        # TextEncodeQwenImageEditPlus 또는 CLIPTextEncode 타입 중 "Positive Prompt" 제목을 가진 노드 찾기
-        node_type = node.get("type") or node.get("class_type")
+        # "Positive Prompt" 제목을 가진 노드 찾기 (노드 타입 무관)
         node_title = node.get("title") or node.get("_meta", {}).get("title")
 
-        if node_title == "Positive Prompt" and node_type in ["TextEncodeQwenImageEditPlus", "CLIPTextEncode"]:
+        if node_title == "Positive Prompt":
             # widgets_values 배열의 첫 번째 값이 프롬프트
             if "widgets_values" in node and isinstance(node["widgets_values"], list) and len(node["widgets_values"]) > 0:
                 node["widgets_values"][0] = prompt
                 logging.info(f"Set prompt in widgets_values: {prompt[:100]}...")
-            # API 형식의 경우 inputs.text 확인
-            elif "inputs" in node and "text" in node["inputs"]:
-                node["inputs"]["text"] = prompt
-                logging.info(f"Set prompt in inputs.text: {prompt[:100]}...")
+            # API 형식의 경우 inputs.text 또는 inputs.prompt 확인
+            elif "inputs" in node:
+                if "text" in node["inputs"]:
+                    node["inputs"]["text"] = prompt
+                    logging.info(f"Set prompt in inputs.text: {prompt[:100]}...")
+                elif "prompt" in node["inputs"]:
+                    node["inputs"]["prompt"] = prompt
+                    logging.info(f"Set prompt in inputs.prompt: {prompt[:100]}...")
     
     workflow = set_unique_filename(workflow, str(uuid.uuid4())[:8], subfolder=subfolder)
 
@@ -262,21 +265,25 @@ def generate_backgrounds(background_items, workflow_name, subfolder):
             if not isinstance(node, dict):
                 continue
 
-            # TextEncodeQwenImageEditPlus 또는 CLIPTextEncode 타입 중 "Positive Prompt" 제목을 가진 노드 찾기
-            node_type = node.get("type") or node.get("class_type")
+            # "Positive Prompt" 제목을 가진 노드 찾기 (노드 타입 무관)
             node_title = node.get("title") or node.get("_meta", {}).get("title")
 
-            if node_title == "Positive Prompt" and node_type in ["TextEncodeQwenImageEditPlus", "CLIPTextEncode"]:
+            if node_title == "Positive Prompt":
                 # widgets_values 배열의 첫 번째 값이 프롬프트
                 if "widgets_values" in node and isinstance(node["widgets_values"], list) and len(node["widgets_values"]) > 0:
                     node["widgets_values"][0] = prompt
                     prompt_set = True
                     logging.info(f"[Image {idx}] Prompt set in widgets_values: {prompt[:100]}...")
-                # API 형식의 경우 inputs.text 확인
-                elif "inputs" in node and "text" in node["inputs"]:
-                    node["inputs"]["text"] = prompt
-                    prompt_set = True
-                    logging.info(f"[Image {idx}] Prompt set in inputs.text: {prompt[:100]}...")
+                # API 형식의 경우 inputs.text 또는 inputs.prompt 확인
+                elif "inputs" in node:
+                    if "text" in node["inputs"]:
+                        node["inputs"]["text"] = prompt
+                        prompt_set = True
+                        logging.info(f"[Image {idx}] Prompt set in inputs.text: {prompt[:100]}...")
+                    elif "prompt" in node["inputs"]:
+                        node["inputs"]["prompt"] = prompt
+                        prompt_set = True
+                        logging.info(f"[Image {idx}] Prompt set in inputs.prompt: {prompt[:100]}...")
 
         if not prompt_set:
             logging.warning(f"[Image {idx}] Failed to set prompt! Prompt was: {prompt[:100]}...")
