@@ -130,10 +130,6 @@
 		currentIndex = index;
 	}
 
-	function goBack() {
-		goto('/prompt');
-	}
-
 	function goHome() {
 		goto('/');
 	}
@@ -184,7 +180,7 @@
 		<!-- 상단 장식 및 헤더 -->
 		<div class="mb-3 flex items-center justify-between">
 			<button
-				on:click={goBack}
+				on:click={goHome}
 				class="rounded-md bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-md transition-colors hover:bg-teal-800 sm:rounded-lg sm:px-4 sm:py-2 sm:text-sm md:text-base"
 			>
 				← 돌아가기
